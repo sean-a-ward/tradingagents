@@ -153,7 +153,7 @@ export OPENROUTER_API_KEY=...      # OpenRouter
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 ```
 
-Experimental: the `openai-codex` provider can use a Codex Access Token from ChatGPT/Codex sign-in instead of `OPENAI_API_KEY`. Run `codex login` first; TradingAgents checks `CODEX_ACCESS_TOKEN`, then reads `~/.codex/auth.json` when available without copying that token into `.env`. If your Codex credentials are stored only in an OS keyring, export `CODEX_ACCESS_TOKEN` before launching TradingAgents. This direct model API path is not documented as a stable Codex API contract, so TradingAgents runs a preflight request and fails early if the token is unsupported or expired.
+Experimental: the `openai-codex` provider can use a Codex Access Token from ChatGPT/Codex sign-in instead of `OPENAI_API_KEY`. Run `codex login` first; TradingAgents checks `CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_ACCESS_TOKEN`, then `~/.codex/auth.json` (`$CODEX_HOME/auth.json` when set) without copying that token into `.env`. It also supports Pi's `~/.pi/agent/auth.json` OAuth entry. If your Codex credentials are stored only in an OS keyring, export `CODEX_ACCESS_TOKEN` before launching TradingAgents.
 
 For enterprise providers (e.g. Azure OpenAI, AWS Bedrock), copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 

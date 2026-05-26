@@ -43,6 +43,7 @@ def test_codex_token_resolves_from_pi_auth(monkeypatch, tmp_path):
 
     monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
     token = _jwt("acct_pi")
     auth_path = tmp_path / "auth.json"
     auth_path.write_text(
@@ -67,14 +68,46 @@ def test_codex_token_resolves_from_pi_auth(monkeypatch, tmp_path):
     assert result.account_id == "acct_pi"
 
 
+def test_codex_token_resolves_from_codex_cli_auth(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    token = _jwt("acct_codex")
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    auth_path = codex_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": None,
+                "tokens": {
+                    "access_token": token,
+                    "refresh_token": "refresh-token",
+                    "account_id": "acct_codex",
+                },
+                "last_refresh": "2026-05-26T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    result = resolve_openai_codex_token()
+
+    assert result.token == token
+    assert result.source == str(auth_path)
+    assert result.account_id == "acct_codex"
+
+
 def test_codex_token_missing_raises_actionable_error(monkeypatch, tmp_path):
     import tradingagents.llm_clients.codex_auth as codex_auth
 
     monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setattr(codex_auth, "PI_AUTH_PATH", tmp_path / "missing.json")
 
-    with pytest.raises(ValueError, match="OpenAI Codex credentials were not found"):
+    with pytest.raises(ValueError, match="codex login"):
         resolve_openai_codex_token()
 
 
