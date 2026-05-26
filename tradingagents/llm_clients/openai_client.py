@@ -1,14 +1,13 @@
 import os
 from typing import Any, Optional
 
-import requests
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
 from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
-from .codex_auth import CODEX_ACCESS_TOKEN_ENV, resolve_codex_access_token
+from .codex_auth import openai_codex_headers, resolve_openai_codex_token
 from .validators import validate_model
 
 
@@ -151,7 +150,6 @@ _PASSTHROUGH_KWARGS = (
 # separate endpoints because international and China accounts cannot share
 # credentials (#758).
 _PROVIDER_BASE_URL = {
-    "openai-codex": "https://api.openai.com/v1",
     "xai":        "https://api.x.ai/v1",
     "deepseek":   "https://api.deepseek.com",
     "qwen":       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -161,6 +159,9 @@ _PROVIDER_BASE_URL = {
     "minimax":    "https://api.minimax.io/v1",
     "minimax-cn": "https://api.minimaxi.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    # ChatGPT Codex OAuth tokens must use the ChatGPT backend. They do not
+    # carry public OpenAI API scopes for https://api.openai.com/v1/responses.
+    "openai-codex": "https://chatgpt.com/backend-api/codex",
     "ollama":     "http://localhost:11434/v1",
 }
 
@@ -179,6 +180,25 @@ def _resolve_provider_base_url(provider: str) -> Optional[str]:
         if env_url:
             return env_url
     return _PROVIDER_BASE_URL.get(provider)
+
+
+def _resolve_openai_codex_base_url(base_url: Optional[str]) -> str:
+    """Return an SDK base URL that resolves to ChatGPT Codex /responses.
+
+    LangChain/OpenAI append ``/responses`` themselves, so the base URL must end
+    at ``.../codex``.  A saved config from earlier experimental attempts may
+    still contain ``https://api.openai.com/v1``; that endpoint is never correct
+    for ChatGPT Codex OAuth tokens, so fall back to the Pi-compatible backend.
+    """
+    default = _PROVIDER_BASE_URL["openai-codex"]
+    if not base_url or "api.openai.com" in base_url:
+        return default
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/codex/responses"):
+        return normalized[: -len("/responses")]
+    if normalized.endswith("/backend-api"):
+        return f"{normalized}/codex"
+    return normalized
 
 
 class OpenAIClient(BaseLLMClient):
@@ -200,47 +220,6 @@ class OpenAIClient(BaseLLMClient):
         super().__init__(model, base_url, **kwargs)
         self.provider = provider.lower()
 
-    _codex_preflight_cache: set[tuple[str, str, str]] = set()
-
-    def _preflight_openai_codex(
-        self,
-        token: str,
-        base_url: str,
-        headers: dict[str, str],
-    ) -> None:
-        """Run a lightweight Codex-auth probe before full agent execution."""
-        cache_key = (base_url.rstrip("/"), self.model, token[-12:])
-        if cache_key in self._codex_preflight_cache:
-            return
-
-        endpoint = f"{base_url.rstrip('/')}/responses"
-        try:
-            response = requests.post(
-                endpoint,
-                headers={**headers, "Content-Type": "application/json"},
-                json={
-                    "model": self.model,
-                    "input": "Reply with OK.",
-                    "max_output_tokens": 8,
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            detail = ""
-            if getattr(exc, "response", None) is not None:
-                detail = f" Response body: {exc.response.text[:500]}"
-            raise ValueError(
-                "openai-codex preflight failed. This experimental provider "
-                "uses a Codex Access Token directly against OpenAI model APIs, "
-                "which may be unsupported for your account or token. Re-run "
-                f"`codex login`, set {CODEX_ACCESS_TOKEN_ENV}, or choose the "
-                "standard openai provider with OPENAI_API_KEY."
-                f"{detail}"
-            ) from exc
-
-        self._codex_preflight_cache.add(cache_key)
-
     def get_llm(self) -> Any:
         """Return configured ChatOpenAI instance."""
         self.warn_if_unknown_model()
@@ -250,24 +229,17 @@ class OpenAIClient(BaseLLMClient):
         # client (e.g. a corporate proxy) takes precedence over the
         # provider default so users can route through their own gateway.
         if self.provider == "openai-codex":
-            resolved_base_url = self.base_url or _resolve_provider_base_url(self.provider)
-            llm_kwargs["base_url"] = resolved_base_url
-            token_result = resolve_codex_access_token()
-            if not token_result.token:
-                raise ValueError(token_result.error or "No Codex Access Token found.")
-            llm_kwargs["api_key"] = "codex-auth-placeholder"
-            caller_headers = dict(self.kwargs.get("default_headers") or {})
-            codex_headers = {
-                "Authorization": f"Bearer {token_result.token}",
+            token_result = resolve_openai_codex_token()
+            llm_kwargs["base_url"] = _resolve_openai_codex_base_url(self.base_url)
+            llm_kwargs["api_key"] = token_result.token
+            caller_headers = self.kwargs.get("default_headers") or {}
+            llm_kwargs["default_headers"] = {
+                **caller_headers,
+                **openai_codex_headers(token_result),
             }
-            llm_kwargs["default_headers"] = {**caller_headers, **codex_headers}
-            if self.kwargs.get("codex_preflight", True):
-                self._preflight_openai_codex(
-                    token_result.token,
-                    resolved_base_url,
-                    llm_kwargs["default_headers"],
-                )
-
+            llm_kwargs["use_responses_api"] = True
+            llm_kwargs.setdefault("store", False)
+            llm_kwargs.setdefault("include", ["reasoning.encrypted_content"])
         elif self.provider in _PROVIDER_BASE_URL:
             llm_kwargs["base_url"] = self.base_url or _resolve_provider_base_url(self.provider)
             api_key_env = get_api_key_env(self.provider)

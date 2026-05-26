@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,19 @@ from unittest.mock import patch
 import pytest
 
 from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV, get_api_key_env
+
+
+def _codex_jwt(account_id: str = "acct_test") -> str:
+    def enc(data: dict) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    payload = {
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+        }
+    }
+    return f"{enc({'alg': 'none'})}.{enc(payload)}.signature"
 
 
 # ---- Mapping coverage -----------------------------------------------------
@@ -96,10 +110,11 @@ def test_ensure_api_key_no_op_for_ollama(monkeypatch, cli_utils):
 
 
 def test_ensure_api_key_uses_codex_access_token(monkeypatch, cli_utils):
-    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "codex-token")
+    token = _codex_jwt("acct_env")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", token)
     with patch.object(cli_utils, "questionary") as mock_q:
         result = cli_utils.ensure_api_key("openai-codex")
-    assert result == "codex-token"
+    assert result == token
     mock_q.password.assert_not_called()
 
 
@@ -109,19 +124,30 @@ def test_ensure_api_key_does_not_persist_file_backed_codex_token(
     cli_utils,
 ):
     monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.chdir(tmp_path)
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text(
-        json.dumps({"tokens": {"access_token": "file-backed-token"}}),
+    token = _codex_jwt("acct_pi")
+    pi_auth = tmp_path / "pi-auth.json"
+    pi_auth.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "type": "oauth",
+                    "access": token,
+                    "refresh": "refresh-token",
+                    "expires": 4_102_444_800_000,
+                }
+            }
+        ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    import tradingagents.llm_clients.codex_auth as codex_auth
+    monkeypatch.setattr(codex_auth, "PI_AUTH_PATH", pi_auth)
 
     result = cli_utils.ensure_api_key("openai-codex")
 
-    assert result == "file-backed-token"
-    assert os.environ["CODEX_ACCESS_TOKEN"] == "file-backed-token"
+    assert result == token
+    assert os.environ["CODEX_ACCESS_TOKEN"] == token
     assert not (tmp_path / ".env").exists()
 
 
