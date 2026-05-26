@@ -68,6 +68,7 @@ def test_openai_codex_client_uses_chatgpt_codex_responses_endpoint(monkeypatch):
 
     assert str(llm.openai_api_base).rstrip("/") == "https://chatgpt.com/backend-api/codex"
     assert llm.use_responses_api is True
+    assert llm.streaming is True
     assert llm.store is False
     assert llm.include == ["reasoning.encrypted_content"]
     assert llm.default_headers["Authorization"] == f"Bearer {token}"

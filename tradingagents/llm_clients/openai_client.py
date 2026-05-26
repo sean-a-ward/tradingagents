@@ -279,6 +279,7 @@ class OpenAIClient(BaseLLMClient):
                 **openai_codex_headers(token_result),
             }
             llm_kwargs["use_responses_api"] = True
+            llm_kwargs["streaming"] = True
             llm_kwargs.setdefault("store", False)
             llm_kwargs.setdefault("include", ["reasoning.encrypted_content"])
         elif self.provider in _PROVIDER_BASE_URL:
