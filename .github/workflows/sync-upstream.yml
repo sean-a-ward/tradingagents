@@ -1,0 +1,41 @@
+name: Sync upstream main
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Fast-forward from upstream
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fast-forward main from upstream
+        env:
+          BRANCH: main
+          UPSTREAM_REPOSITORY: TauricResearch/TradingAgents
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "${BRANCH}"
+          git checkout "${BRANCH}"
+          git merge --ff-only "upstream/${BRANCH}"
+          git push origin "${BRANCH}"
