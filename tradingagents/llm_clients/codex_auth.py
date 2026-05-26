@@ -76,16 +76,15 @@ def _write_pi_auth(auth: dict[str, Any], path: Path | None = None) -> None:
     path.write_text(json.dumps(auth, indent=2) + "\n", encoding="utf-8")
 
 
-def _refresh_pi_codex_token(
-    credentials: dict[str, Any],
-    auth: dict[str, Any],
-    path: Path | None = None,
-) -> str | None:
-    import requests
+def _token_expires_soon(token: str, skew_seconds: int = 60) -> bool:
+    exp = _decode_jwt_payload(token).get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    return time.time() >= exp - skew_seconds
 
-    refresh_token = credentials.get("refresh")
-    if not isinstance(refresh_token, str) or not refresh_token:
-        return None
+
+def _refresh_openai_codex_token(refresh_token: str) -> dict[str, Any]:
+    import requests
 
     response = requests.post(
         _TOKEN_URL,
@@ -100,11 +99,26 @@ def _refresh_pi_codex_token(
     response.raise_for_status()
     refreshed = response.json()
     access = refreshed.get("access_token")
-    refresh = refreshed.get("refresh_token")
     expires_in = refreshed.get("expires_in")
-    if not access or not refresh or not isinstance(expires_in, (int, float)):
+    if not access or not isinstance(expires_in, (int, float)):
         raise ValueError("OpenAI Codex token refresh response was missing fields.")
+    extract_codex_account_id(access)
+    return refreshed
 
+
+def _refresh_pi_codex_token(
+    credentials: dict[str, Any],
+    auth: dict[str, Any],
+    path: Path | None = None,
+) -> str | None:
+    refresh_token = credentials.get("refresh")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+
+    refreshed = _refresh_openai_codex_token(refresh_token)
+    access = refreshed["access_token"]
+    refresh = refreshed.get("refresh_token") or refresh_token
+    expires_in = refreshed["expires_in"]
     account_id = extract_codex_account_id(access)
     auth[CODEX_PROVIDER] = {
         "type": "oauth",
@@ -153,6 +167,21 @@ def _resolve_codex_cli_token(path: Path | None = None) -> str | None:
     if isinstance(tokens, dict):
         access = tokens.get("access_token")
         if isinstance(access, str) and access:
+            refresh = tokens.get("refresh_token")
+            if _token_expires_soon(access) and isinstance(refresh, str) and refresh:
+                refreshed = _refresh_openai_codex_token(refresh)
+                tokens["access_token"] = refreshed["access_token"]
+                tokens["refresh_token"] = refreshed.get("refresh_token") or refresh
+                if refreshed.get("id_token"):
+                    tokens["id_token"] = refreshed["id_token"]
+                if refreshed.get("account_id"):
+                    tokens["account_id"] = refreshed["account_id"]
+                auth["last_refresh"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(),
+                )
+                auth_path.write_text(json.dumps(auth, indent=2) + "\n", encoding="utf-8")
+                access = tokens["access_token"]
             return access
 
     # Keep this parser tolerant of minor auth-file schema changes without

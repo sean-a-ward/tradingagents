@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 import pytest
 
@@ -15,7 +16,7 @@ from tradingagents.llm_clients.factory import create_llm_client
 from tradingagents.llm_clients.model_catalog import get_model_options
 
 
-def _jwt(account_id: str = "acct_test") -> str:
+def _jwt(account_id: str = "acct_test", exp: int | None = None) -> str:
     def enc(data: dict) -> str:
         raw = json.dumps(data, separators=(",", ":")).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -25,6 +26,8 @@ def _jwt(account_id: str = "acct_test") -> str:
             "chatgpt_account_id": account_id,
         }
     }
+    if exp is not None:
+        payload["exp"] = exp
     return f"{enc({'alg': 'none'})}.{enc(payload)}.signature"
 
 
@@ -97,6 +100,60 @@ def test_codex_token_resolves_from_codex_cli_auth(monkeypatch, tmp_path):
     assert result.token == token
     assert result.source == str(auth_path)
     assert result.account_id == "acct_codex"
+
+
+def test_codex_cli_auth_refreshes_expired_access_token(monkeypatch, tmp_path):
+    import tradingagents.llm_clients.codex_auth as codex_auth
+
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    old_token = _jwt("acct_old", exp=int(time.time()) - 10)
+    new_token = _jwt("acct_new", exp=int(time.time()) + 3600)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    auth_path = codex_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": old_token,
+                    "refresh_token": "refresh-old",
+                    "account_id": "acct_old",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "access_token": new_token,
+                "refresh_token": "refresh-new",
+                "expires_in": 3600,
+            }
+
+    def fake_post(url, **kwargs):
+        assert url == codex_auth._TOKEN_URL
+        assert kwargs["data"]["refresh_token"] == "refresh-old"
+        return FakeResponse()
+
+    import requests
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    result = resolve_openai_codex_token()
+    saved = json.loads(auth_path.read_text(encoding="utf-8"))
+
+    assert result.token == new_token
+    assert result.account_id == "acct_new"
+    assert saved["tokens"]["access_token"] == new_token
+    assert saved["tokens"]["refresh_token"] == "refresh-new"
+    assert saved["last_refresh"]
 
 
 def test_codex_token_missing_raises_actionable_error(monkeypatch, tmp_path):
