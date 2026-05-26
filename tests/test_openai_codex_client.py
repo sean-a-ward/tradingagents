@@ -135,3 +135,48 @@ def test_openai_codex_payload_adds_default_instructions_without_system_message()
     assert payload["input"] == [
         {"content": "hello", "role": "user", "type": "message"}
     ]
+
+
+def test_openai_codex_payload_preserves_existing_instructions():
+    from langchain_core.messages import HumanMessage
+
+    llm = OpenAICodexChatOpenAI(
+        model="gpt-5.3-codex-spark",
+        api_key="test-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        use_responses_api=True,
+    )
+
+    payload = llm._get_request_payload(
+        [HumanMessage(content="hello")],
+        instructions="caller instruction",
+    )
+
+    assert payload["instructions"] == "caller instruction"
+    assert payload["input"] == [
+        {"content": "hello", "role": "user", "type": "message"}
+    ]
+
+
+def test_openai_codex_payload_combines_existing_and_system_instructions():
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = OpenAICodexChatOpenAI(
+        model="gpt-5.3-codex-spark",
+        api_key="test-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        use_responses_api=True,
+    )
+
+    payload = llm._get_request_payload(
+        [
+            SystemMessage(content="system instruction"),
+            HumanMessage(content="hello"),
+        ],
+        instructions="caller instruction",
+    )
+
+    assert payload["instructions"] == "caller instruction\n\nsystem instruction"
+    assert payload["input"] == [
+        {"content": "hello", "role": "user", "type": "message"}
+    ]

@@ -151,7 +151,11 @@ class OpenAICodexChatOpenAI(NormalizedChatOpenAI):
         if "input" not in payload:
             return payload
 
+        existing_instructions = payload.get("instructions")
         instructions: list[str] = []
+        if isinstance(existing_instructions, str) and existing_instructions:
+            instructions.append(existing_instructions)
+
         filtered_input = []
         for item in payload["input"]:
             if isinstance(item, dict) and item.get("role") == "system":
