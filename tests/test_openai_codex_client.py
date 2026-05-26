@@ -11,6 +11,7 @@ from tradingagents.llm_clients.codex_auth import (
     resolve_openai_codex_token,
 )
 from tradingagents.llm_clients.openai_client import OpenAIClient
+from tradingagents.llm_clients.openai_client import OpenAICodexChatOpenAI
 
 
 def _jwt(account_id: str = "acct_test") -> str:
@@ -91,3 +92,46 @@ def test_invalid_codex_token_raises_clear_error(monkeypatch):
 
     with pytest.raises(ValueError, match="extract ChatGPT account id"):
         OpenAIClient("gpt-5.3-codex-spark", provider="openai-codex").get_llm()
+
+
+def test_openai_codex_payload_lifts_system_messages_to_instructions():
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = OpenAICodexChatOpenAI(
+        model="gpt-5.3-codex-spark",
+        api_key="test-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        use_responses_api=True,
+    )
+
+    payload = llm._get_request_payload(
+        [
+            SystemMessage(content="system one"),
+            SystemMessage(content="system two"),
+            HumanMessage(content="hello"),
+        ]
+    )
+
+    assert payload["instructions"] == "system one\n\nsystem two"
+    assert all(item.get("role") != "system" for item in payload["input"])
+    assert payload["input"] == [
+        {"content": "hello", "role": "user", "type": "message"}
+    ]
+
+
+def test_openai_codex_payload_adds_default_instructions_without_system_message():
+    from langchain_core.messages import HumanMessage
+
+    llm = OpenAICodexChatOpenAI(
+        model="gpt-5.3-codex-spark",
+        api_key="test-token",
+        base_url="https://chatgpt.com/backend-api/codex",
+        use_responses_api=True,
+    )
+
+    payload = llm._get_request_payload([HumanMessage(content="hello")])
+
+    assert payload["instructions"] == "You are a helpful assistant."
+    assert payload["input"] == [
+        {"content": "hello", "role": "user", "type": "message"}
+    ]

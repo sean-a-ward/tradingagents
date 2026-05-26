@@ -137,6 +137,43 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
         return payload
 
 
+class OpenAICodexChatOpenAI(NormalizedChatOpenAI):
+    """ChatGPT Codex backend adjustments on top of Responses API payloads.
+
+    LangChain's Responses API adapter serializes system messages as input
+    items. ChatGPT's Codex backend rejects those requests unless the prompt is
+    supplied through the top-level ``instructions`` field, matching Pi's
+    openai-codex-responses provider.
+    """
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if "input" not in payload:
+            return payload
+
+        instructions: list[str] = []
+        filtered_input = []
+        for item in payload["input"]:
+            if isinstance(item, dict) and item.get("role") == "system":
+                content = item.get("content")
+                if isinstance(content, str):
+                    instructions.append(content)
+                elif isinstance(content, list):
+                    instructions.extend(
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict)
+                    )
+                continue
+            filtered_input.append(item)
+
+        payload["input"] = filtered_input
+        payload["instructions"] = "\n\n".join(
+            part for part in instructions if part
+        ) or "You are a helpful assistant."
+        return payload
+
+
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort",
@@ -274,6 +311,8 @@ class OpenAIClient(BaseLLMClient):
         # base NormalizedChatOpenAI stays free of provider branches.
         if self.provider == "deepseek":
             chat_cls = DeepSeekChatOpenAI
+        elif self.provider == "openai-codex":
+            chat_cls = OpenAICodexChatOpenAI
         elif self.provider in ("minimax", "minimax-cn"):
             chat_cls = MinimaxChatOpenAI
         else:
