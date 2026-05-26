@@ -12,6 +12,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
+    "TRADINGAGENTS_OPENAI_QUICK_REASONING_EFFORT": "openai_quick_reasoning_effort",
+    "TRADINGAGENTS_OPENAI_DEEP_REASONING_EFFORT":  "openai_deep_reasoning_effort",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
@@ -63,6 +65,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
+    "openai_quick_reasoning_effort": None,  # "low", "medium", "high"
+    "openai_deep_reasoning_effort": None,   # "low", "medium", "high"
     "anthropic_effort": None,           # "high", "medium", "low"
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
