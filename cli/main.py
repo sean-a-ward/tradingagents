@@ -594,6 +594,8 @@ def get_user_selections():
     # Step 8: Provider-specific thinking configuration
     thinking_level = None
     reasoning_effort = None
+    quick_reasoning_effort = None
+    deep_reasoning_effort = None
     anthropic_effort = None
 
     provider_lower = selected_llm_provider.lower()
@@ -605,14 +607,15 @@ def get_user_selections():
             )
         )
         thinking_level = ask_gemini_thinking_config()
-    elif provider_lower == "openai":
+    elif provider_lower in ("openai", "openai-codex"):
         console.print(
             create_question_box(
                 "Step 8: Reasoning Effort",
                 "Configure OpenAI reasoning effort level"
             )
         )
-        reasoning_effort = ask_openai_reasoning_effort()
+        quick_reasoning_effort = ask_openai_reasoning_effort("quick")
+        deep_reasoning_effort = ask_openai_reasoning_effort("deep")
     elif provider_lower == "anthropic":
         console.print(
             create_question_box(
@@ -634,6 +637,8 @@ def get_user_selections():
         "deep_thinker": selected_deep_thinker,
         "google_thinking_level": thinking_level,
         "openai_reasoning_effort": reasoning_effort,
+        "openai_quick_reasoning_effort": quick_reasoning_effort,
+        "openai_deep_reasoning_effort": deep_reasoning_effort,
         "anthropic_effort": anthropic_effort,
         "output_language": output_language,
     }
@@ -989,6 +994,8 @@ def run_analysis(checkpoint: bool = False):
     # Provider-specific thinking configuration
     config["google_thinking_level"] = selections.get("google_thinking_level")
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
+    config["openai_quick_reasoning_effort"] = selections.get("openai_quick_reasoning_effort")
+    config["openai_deep_reasoning_effort"] = selections.get("openai_deep_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
     config["checkpoint_enabled"] = checkpoint

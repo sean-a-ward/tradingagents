@@ -16,6 +16,9 @@ from typing import Optional
 
 PROVIDER_API_KEY_ENV: dict[str, Optional[str]] = {
     "openai":     "OPENAI_API_KEY",
+    # openai-codex uses a Codex Access Token resolved by codex_auth.py,
+    # not an OpenAI Platform API key.
+    "openai-codex": None,
     "anthropic":  "ANTHROPIC_API_KEY",
     "google":     "GOOGLE_API_KEY",
     "azure":      "AZURE_OPENAI_API_KEY",

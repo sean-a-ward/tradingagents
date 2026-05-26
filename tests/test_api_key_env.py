@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,7 +21,7 @@ def test_every_select_llm_provider_choice_has_an_entry():
     # stay in lockstep. Region-specific keys (qwen-cn / minimax-cn / glm-cn)
     # are reached via the secondary region prompt, so they must also be present.
     expected = {
-        "openai", "google", "anthropic", "xai", "deepseek",
+        "openai", "openai-codex", "google", "anthropic", "xai", "deepseek",
         "qwen", "qwen-cn",
         "glm", "glm-cn",
         "minimax", "minimax-cn",
@@ -49,6 +50,10 @@ def test_every_select_llm_provider_choice_has_an_entry():
 )
 def test_known_providers_resolve(provider, env_var):
     assert get_api_key_env(provider) == env_var
+
+
+def test_openai_codex_has_no_platform_api_key():
+    assert get_api_key_env("openai-codex") is None
 
 
 def test_ollama_has_no_key():
@@ -88,6 +93,36 @@ def test_ensure_api_key_no_op_for_ollama(monkeypatch, cli_utils):
         result = cli_utils.ensure_api_key("ollama")
     assert result is None
     mock_q.password.assert_not_called()
+
+
+def test_ensure_api_key_uses_codex_access_token(monkeypatch, cli_utils):
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "codex-token")
+    with patch.object(cli_utils, "questionary") as mock_q:
+        result = cli_utils.ensure_api_key("openai-codex")
+    assert result == "codex-token"
+    mock_q.password.assert_not_called()
+
+
+def test_ensure_api_key_does_not_persist_file_backed_codex_token(
+    monkeypatch,
+    tmp_path,
+    cli_utils,
+):
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "file-backed-token"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    result = cli_utils.ensure_api_key("openai-codex")
+
+    assert result == "file-backed-token"
+    assert os.environ["CODEX_ACCESS_TOKEN"] == "file-backed-token"
+    assert not (tmp_path / ".env").exists()
 
 
 def test_ensure_api_key_unknown_provider_no_prompt(monkeypatch, cli_utils):

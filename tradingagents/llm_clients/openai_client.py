@@ -1,12 +1,14 @@
 import os
 from typing import Any, Optional
 
+import requests
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
 from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
+from .codex_auth import CODEX_ACCESS_TOKEN_ENV, resolve_codex_access_token
 from .validators import validate_model
 
 
@@ -140,6 +142,7 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort",
     "api_key", "callbacks", "http_client", "http_async_client",
+    "default_headers",
 )
 
 # Provider base URLs. API-key env vars live in api_key_env.PROVIDER_API_KEY_ENV
@@ -148,6 +151,7 @@ _PASSTHROUGH_KWARGS = (
 # separate endpoints because international and China accounts cannot share
 # credentials (#758).
 _PROVIDER_BASE_URL = {
+    "openai-codex": "https://api.openai.com/v1",
     "xai":        "https://api.x.ai/v1",
     "deepseek":   "https://api.deepseek.com",
     "qwen":       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -196,6 +200,47 @@ class OpenAIClient(BaseLLMClient):
         super().__init__(model, base_url, **kwargs)
         self.provider = provider.lower()
 
+    _codex_preflight_cache: set[tuple[str, str, str]] = set()
+
+    def _preflight_openai_codex(
+        self,
+        token: str,
+        base_url: str,
+        headers: dict[str, str],
+    ) -> None:
+        """Run a lightweight Codex-auth probe before full agent execution."""
+        cache_key = (base_url.rstrip("/"), self.model, token[-12:])
+        if cache_key in self._codex_preflight_cache:
+            return
+
+        endpoint = f"{base_url.rstrip('/')}/responses"
+        try:
+            response = requests.post(
+                endpoint,
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "input": "Reply with OK.",
+                    "max_output_tokens": 8,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            detail = ""
+            if getattr(exc, "response", None) is not None:
+                detail = f" Response body: {exc.response.text[:500]}"
+            raise ValueError(
+                "openai-codex preflight failed. This experimental provider "
+                "uses a Codex Access Token directly against OpenAI model APIs, "
+                "which may be unsupported for your account or token. Re-run "
+                f"`codex login`, set {CODEX_ACCESS_TOKEN_ENV}, or choose the "
+                "standard openai provider with OPENAI_API_KEY."
+                f"{detail}"
+            ) from exc
+
+        self._codex_preflight_cache.add(cache_key)
+
     def get_llm(self) -> Any:
         """Return configured ChatOpenAI instance."""
         self.warn_if_unknown_model()
@@ -204,7 +249,26 @@ class OpenAIClient(BaseLLMClient):
         # Provider-specific base URL and auth. An explicit base_url on the
         # client (e.g. a corporate proxy) takes precedence over the
         # provider default so users can route through their own gateway.
-        if self.provider in _PROVIDER_BASE_URL:
+        if self.provider == "openai-codex":
+            resolved_base_url = self.base_url or _resolve_provider_base_url(self.provider)
+            llm_kwargs["base_url"] = resolved_base_url
+            token_result = resolve_codex_access_token()
+            if not token_result.token:
+                raise ValueError(token_result.error or "No Codex Access Token found.")
+            llm_kwargs["api_key"] = "codex-auth-placeholder"
+            caller_headers = dict(self.kwargs.get("default_headers") or {})
+            codex_headers = {
+                "Authorization": f"Bearer {token_result.token}",
+            }
+            llm_kwargs["default_headers"] = {**caller_headers, **codex_headers}
+            if self.kwargs.get("codex_preflight", True):
+                self._preflight_openai_codex(
+                    token_result.token,
+                    resolved_base_url,
+                    llm_kwargs["default_headers"],
+                )
+
+        elif self.provider in _PROVIDER_BASE_URL:
             llm_kwargs["base_url"] = self.base_url or _resolve_provider_base_url(self.provider)
             api_key_env = get_api_key_env(self.provider)
             if api_key_env:
@@ -225,11 +289,13 @@ class OpenAIClient(BaseLLMClient):
         # Forward user-provided kwargs
         for key in _PASSTHROUGH_KWARGS:
             if key in self.kwargs:
+                if self.provider == "openai-codex" and key == "default_headers":
+                    continue
                 llm_kwargs[key] = self.kwargs[key]
 
         # Native OpenAI: use Responses API for consistent behavior across
         # all model families. Third-party providers use Chat Completions.
-        if self.provider == "openai":
+        if self.provider in ("openai", "openai-codex"):
             llm_kwargs["use_responses_api"] = True
 
         # Provider-specific quirks live in their own subclasses so the

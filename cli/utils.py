@@ -8,6 +8,10 @@ from rich.console import Console
 
 from cli.models import AnalystType, AssetType
 from tradingagents.llm_clients.api_key_env import get_api_key_env
+from tradingagents.llm_clients.codex_auth import (
+    CODEX_ACCESS_TOKEN_ENV,
+    resolve_codex_access_token,
+)
 from tradingagents.llm_clients.model_catalog import get_model_options
 
 console = Console()
@@ -268,6 +272,7 @@ def select_llm_provider() -> tuple[str, str | None]:
     # (display_name, provider_key, base_url)
     PROVIDERS = [
         ("OpenAI", "openai", "https://api.openai.com/v1"),
+        ("OpenAI Codex (experimental, ChatGPT sign-in)", "openai-codex", "https://api.openai.com/v1"),
         ("Google", "google", None),
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("xAI", "xai", "https://api.x.ai/v1"),
@@ -304,16 +309,24 @@ def select_llm_provider() -> tuple[str, str | None]:
     return provider, url
 
 
-def ask_openai_reasoning_effort() -> str:
+def ask_openai_reasoning_effort(mode: str | None = None) -> str:
     """Ask for OpenAI reasoning effort level."""
+    default = "Low (Default)" if mode == "quick" else "Medium (Default)"
     choices = [
-        questionary.Choice("Medium (Default)", "medium"),
+        questionary.Choice(default, "low" if mode == "quick" else "medium"),
         questionary.Choice("High (More thorough)", "high"),
+        questionary.Choice("Medium (Balanced)", "medium"),
         questionary.Choice("Low (Faster)", "low"),
     ]
+    deduped_choices = []
+    seen = set()
+    for choice in choices:
+        if choice.value not in seen:
+            deduped_choices.append(choice)
+            seen.add(choice.value)
     return questionary.select(
-        "Select Reasoning Effort:",
-        choices=choices,
+        "Select Reasoning Effort:" if mode is None else f"Select {mode.title()} Reasoning Effort:",
+        choices=deduped_choices,
         style=questionary.Style([
             ("selected", "fg:cyan noinherit"),
             ("highlighted", "fg:cyan noinherit"),
@@ -449,7 +462,7 @@ def confirm_ollama_endpoint(url: str) -> None:
 
     Surfaces three things the user benefits from seeing before model
     selection: which URL we'll actually hit, where it came from
-    (\`OLLAMA_BASE_URL\` vs default), and a soft warning if the URL is
+    (OLLAMA_BASE_URL vs default), and a soft warning if the URL is
     missing the scheme/port that ollama-serve expects. The warning is
     advisory only — we don't reject malformed input, since the user may
     be doing something deliberately unusual (e.g. a reverse-proxy path).
@@ -485,6 +498,9 @@ def ensure_api_key(provider: str) -> Optional[str]:
     Returns None for providers that do not require a key (e.g. ollama)
     and for providers not found in the canonical mapping.
     """
+    if provider.lower() == "openai-codex":
+        return ensure_openai_codex_access()
+
     env_var = get_api_key_env(provider)
     if env_var is None:
         return None  # ollama / unknown — no key check possible
@@ -515,6 +531,38 @@ def ensure_api_key(provider: str) -> Optional[str]:
     os.environ[env_var] = key
     console.print(f"[green]Saved {env_var} to {env_path}[/green]")
     return key
+
+
+def ensure_openai_codex_access() -> Optional[str]:
+    """Resolve a Codex Access Token without copying Codex auth into .env."""
+    result = resolve_codex_access_token()
+    if result.token:
+        os.environ[CODEX_ACCESS_TOKEN_ENV] = result.token
+        if result.source != CODEX_ACCESS_TOKEN_ENV:
+            console.print(
+                f"[green]Found Codex Access Token in {result.source}[/green]"
+            )
+        else:
+            console.print(f"[green]Using {CODEX_ACCESS_TOKEN_ENV} from environment[/green]")
+        return result.token
+
+    console.print(f"\n[yellow]{result.error}[/yellow]")
+    console.print(
+        "[yellow]Run `codex login` in a terminal, then retry this provider. "
+        f"If your Codex credentials are stored in an OS keyring, export "
+        f"{CODEX_ACCESS_TOKEN_ENV} before starting TradingAgents.[/yellow]"
+    )
+    retry = questionary.confirm(
+        "Retry after signing in with Codex?",
+        default=True,
+        style=questionary.Style([
+            ("text", "fg:cyan"),
+            ("highlighted", "noinherit"),
+        ]),
+    ).ask()
+    if retry:
+        return ensure_openai_codex_access()
+    return None
 
 
 def ask_output_language() -> str:
