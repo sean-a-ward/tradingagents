@@ -126,6 +126,7 @@ def test_ensure_api_key_does_not_persist_file_backed_codex_token(
     monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
     token = _codex_jwt("acct_pi")
     pi_auth = tmp_path / "pi-auth.json"
     pi_auth.write_text(
@@ -143,6 +144,36 @@ def test_ensure_api_key_does_not_persist_file_backed_codex_token(
     )
     import tradingagents.llm_clients.codex_auth as codex_auth
     monkeypatch.setattr(codex_auth, "PI_AUTH_PATH", pi_auth)
+
+    result = cli_utils.ensure_api_key("openai-codex")
+
+    assert result == token
+    assert os.environ["CODEX_ACCESS_TOKEN"] == token
+    assert not (tmp_path / ".env").exists()
+
+
+def test_ensure_api_key_reads_codex_cli_auth(monkeypatch, tmp_path, cli_utils):
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    token = _codex_jwt("acct_codex")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": None,
+                "tokens": {
+                    "access_token": token,
+                    "refresh_token": "refresh-token",
+                    "account_id": "acct_codex",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     result = cli_utils.ensure_api_key("openai-codex")
 

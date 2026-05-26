@@ -20,6 +20,7 @@ from typing import Any
 
 CODEX_PROVIDER = "openai-codex"
 CODEX_ACCESS_TOKEN_ENVS = ("CODEX_ACCESS_TOKEN", "OPENAI_CODEX_ACCESS_TOKEN")
+CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 PI_AUTH_PATH = Path.home() / ".pi" / "agent" / "auth.json"
 
 _CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -56,14 +57,17 @@ def extract_codex_account_id(token: str) -> str:
     return account_id
 
 
-def _read_pi_auth(path: Path | None = None) -> dict[str, Any] | None:
-    path = path or PI_AUTH_PATH
+def _read_json_file(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Could not parse Pi auth file at {path}.") from exc
+        raise ValueError(f"Could not parse auth file at {path}.") from exc
+
+
+def _read_pi_auth(path: Path | None = None) -> dict[str, Any] | None:
+    return _read_json_file(path or PI_AUTH_PATH)
 
 
 def _write_pi_auth(auth: dict[str, Any], path: Path | None = None) -> None:
@@ -72,16 +76,15 @@ def _write_pi_auth(auth: dict[str, Any], path: Path | None = None) -> None:
     path.write_text(json.dumps(auth, indent=2) + "\n", encoding="utf-8")
 
 
-def _refresh_pi_codex_token(
-    credentials: dict[str, Any],
-    auth: dict[str, Any],
-    path: Path | None = None,
-) -> str | None:
-    import requests
+def _token_expires_soon(token: str, skew_seconds: int = 60) -> bool:
+    exp = _decode_jwt_payload(token).get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    return time.time() >= exp - skew_seconds
 
-    refresh_token = credentials.get("refresh")
-    if not isinstance(refresh_token, str) or not refresh_token:
-        return None
+
+def _refresh_openai_codex_token(refresh_token: str) -> dict[str, Any]:
+    import requests
 
     response = requests.post(
         _TOKEN_URL,
@@ -96,11 +99,26 @@ def _refresh_pi_codex_token(
     response.raise_for_status()
     refreshed = response.json()
     access = refreshed.get("access_token")
-    refresh = refreshed.get("refresh_token")
     expires_in = refreshed.get("expires_in")
-    if not access or not refresh or not isinstance(expires_in, (int, float)):
+    if not access or not isinstance(expires_in, (int, float)):
         raise ValueError("OpenAI Codex token refresh response was missing fields.")
+    extract_codex_account_id(access)
+    return refreshed
 
+
+def _refresh_pi_codex_token(
+    credentials: dict[str, Any],
+    auth: dict[str, Any],
+    path: Path | None = None,
+) -> str | None:
+    refresh_token = credentials.get("refresh")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+
+    refreshed = _refresh_openai_codex_token(refresh_token)
+    access = refreshed["access_token"]
+    refresh = refreshed.get("refresh_token") or refresh_token
+    expires_in = refreshed["expires_in"]
     account_id = extract_codex_account_id(access)
     auth[CODEX_PROVIDER] = {
         "type": "oauth",
@@ -131,9 +149,54 @@ def _resolve_pi_codex_token(path: Path | None = None) -> str | None:
     return _refresh_pi_codex_token(credentials, auth, path)
 
 
+def get_codex_auth_path() -> Path:
+    """Return the official Codex CLI auth path."""
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "auth.json"
+    return CODEX_AUTH_PATH
+
+
+def _resolve_codex_cli_token(path: Path | None = None) -> str | None:
+    auth_path = path or get_codex_auth_path()
+    auth = _read_json_file(auth_path)
+    if not auth:
+        return None
+
+    tokens = auth.get("tokens")
+    if isinstance(tokens, dict):
+        access = tokens.get("access_token")
+        if isinstance(access, str) and access:
+            refresh = tokens.get("refresh_token")
+            if _token_expires_soon(access) and isinstance(refresh, str) and refresh:
+                refreshed = _refresh_openai_codex_token(refresh)
+                tokens["access_token"] = refreshed["access_token"]
+                tokens["refresh_token"] = refreshed.get("refresh_token") or refresh
+                if refreshed.get("id_token"):
+                    tokens["id_token"] = refreshed["id_token"]
+                if refreshed.get("account_id"):
+                    tokens["account_id"] = refreshed["account_id"]
+                auth["last_refresh"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(),
+                )
+                auth_path.write_text(json.dumps(auth, indent=2) + "\n", encoding="utf-8")
+                access = tokens["access_token"]
+            return access
+
+    # Keep this parser tolerant of minor auth-file schema changes without
+    # accepting arbitrary nested strings as tokens.
+    access = auth.get("access_token") or auth.get("codex_access_token")
+    if isinstance(access, str) and access:
+        return access
+    return None
+
+
 def has_openai_codex_credentials() -> bool:
-    """Return True if env or Pi auth has usable-looking Codex credentials."""
+    """Return True if env, Codex CLI, or Pi auth has usable-looking credentials."""
     if any(os.environ.get(env_var) for env_var in CODEX_ACCESS_TOKEN_ENVS):
+        return True
+    if _resolve_codex_cli_token():
         return True
     auth = _read_pi_auth()
     credentials = auth.get(CODEX_PROVIDER) if auth else None
@@ -141,11 +204,20 @@ def has_openai_codex_credentials() -> bool:
 
 
 def resolve_openai_codex_token() -> CodexTokenResult:
-    """Resolve a ChatGPT Codex OAuth token from env or Pi's auth store."""
+    """Resolve a ChatGPT Codex OAuth token from env or local auth stores."""
     for env_var in CODEX_ACCESS_TOKEN_ENVS:
         token = os.environ.get(env_var)
         if token:
             return CodexTokenResult(token, env_var, extract_codex_account_id(token))
+
+    codex_auth_path = get_codex_auth_path()
+    token = _resolve_codex_cli_token(codex_auth_path)
+    if token:
+        return CodexTokenResult(
+            token,
+            str(codex_auth_path),
+            extract_codex_account_id(token),
+        )
 
     token = _resolve_pi_codex_token()
     if token:
@@ -154,8 +226,9 @@ def resolve_openai_codex_token() -> CodexTokenResult:
     envs = " or ".join(CODEX_ACCESS_TOKEN_ENVS)
     raise ValueError(
         "OpenAI Codex credentials were not found. Set "
-        f"{envs}, or run `pi` /login for openai-codex so "
-        f"{PI_AUTH_PATH} contains an openai-codex OAuth entry."
+        f"{envs}, run `codex login` so {codex_auth_path} contains "
+        f"tokens.access_token, or run `pi` /login for openai-codex so "
+        f"{PI_AUTH_PATH} contains an OAuth entry."
     )
 
 
