@@ -9,8 +9,8 @@ from rich.console import Console
 from cli.models import AnalystType, AssetType
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.codex_auth import (
-    CODEX_ACCESS_TOKEN_ENV,
-    resolve_codex_access_token,
+    CODEX_ACCESS_TOKEN_ENVS,
+    resolve_openai_codex_token,
 )
 from tradingagents.llm_clients.model_catalog import get_model_options
 
@@ -272,7 +272,7 @@ def select_llm_provider() -> tuple[str, str | None]:
     # (display_name, provider_key, base_url)
     PROVIDERS = [
         ("OpenAI", "openai", "https://api.openai.com/v1"),
-        ("OpenAI Codex (experimental, ChatGPT sign-in)", "openai-codex", "https://api.openai.com/v1"),
+        ("OpenAI Codex (ChatGPT OAuth)", "openai-codex", "https://chatgpt.com/backend-api/codex"),
         ("Google", "google", None),
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("xAI", "xai", "https://api.x.ai/v1"),
@@ -534,35 +534,37 @@ def ensure_api_key(provider: str) -> Optional[str]:
 
 
 def ensure_openai_codex_access() -> Optional[str]:
-    """Resolve a Codex Access Token without copying Codex auth into .env."""
-    result = resolve_codex_access_token()
-    if result.token:
-        os.environ[CODEX_ACCESS_TOKEN_ENV] = result.token
-        if result.source != CODEX_ACCESS_TOKEN_ENV:
+    """Resolve ChatGPT Codex OAuth credentials or prompt for an access token."""
+    try:
+        result = resolve_openai_codex_token()
+    except ValueError as exc:
+        console.print(f"\n[yellow]{exc}[/yellow]")
+        env_var = CODEX_ACCESS_TOKEN_ENVS[0]
+        token = questionary.password(
+            f"Paste your OpenAI Codex OAuth access token (will be saved to .env as {env_var}):",
+            style=questionary.Style([
+                ("text", "fg:cyan"),
+                ("highlighted", "noinherit"),
+            ]),
+        ).ask()
+        if not token:
             console.print(
-                f"[green]Found Codex Access Token in {result.source}[/green]"
+                "[red]Skipped. OpenAI Codex calls will fail until Codex credentials are available.[/red]"
             )
-        else:
-            console.print(f"[green]Using {CODEX_ACCESS_TOKEN_ENV} from environment[/green]")
-        return result.token
+            return None
 
-    console.print(f"\n[yellow]{result.error}[/yellow]")
+        env_path = find_dotenv(usecwd=True) or str(Path.cwd() / ".env")
+        Path(env_path).touch(exist_ok=True)
+        set_key(env_path, env_var, token)
+        os.environ[env_var] = token
+        console.print(f"[green]Saved {env_var} to {env_path}[/green]")
+        return token
+
+    os.environ[CODEX_ACCESS_TOKEN_ENVS[0]] = result.token
     console.print(
-        "[yellow]Run `codex login` in a terminal, then retry this provider. "
-        f"If your Codex credentials are stored in an OS keyring, export "
-        f"{CODEX_ACCESS_TOKEN_ENV} before starting TradingAgents.[/yellow]"
+        f"[green]Using OpenAI Codex credentials from {result.source}[/green]"
     )
-    retry = questionary.confirm(
-        "Retry after signing in with Codex?",
-        default=True,
-        style=questionary.Style([
-            ("text", "fg:cyan"),
-            ("highlighted", "noinherit"),
-        ]),
-    ).ask()
-    if retry:
-        return ensure_openai_codex_access()
-    return None
+    return result.token
 
 
 def ask_output_language() -> str:

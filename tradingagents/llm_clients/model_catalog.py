@@ -90,14 +90,18 @@ MODEL_OPTIONS: ProviderModeOptions = {
     },
     "openai-codex": {
         "quick": [
+            ("GPT-5.3 Codex Spark - Fast Codex model", "gpt-5.3-codex-spark"),
             ("GPT-5.5 - Codex access, low effort by default", "gpt-5.5"),
-            ("GPT-5.4 Mini - Faster fallback", "gpt-5.4-mini"),
+            ("GPT-5.4 Mini - Fast general model through Codex", "gpt-5.4-mini"),
+            ("GPT-5.3 Codex - Agentic coding model", "gpt-5.3-codex"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
             ("GPT-5.5 - Codex access, medium effort by default", "gpt-5.5"),
             ("GPT-5.5 Pro - Most capable, if available to your account", "gpt-5.5-pro"),
-            ("GPT-5.4 - Previous-gen frontier", "gpt-5.4"),
+            ("GPT-5.4 - Frontier model through Codex", "gpt-5.4"),
+            ("GPT-5.3 Codex - Agentic coding model", "gpt-5.3-codex"),
+            ("GPT-5.2 Codex - Previous Codex model", "gpt-5.2-codex"),
             ("Custom model ID", "custom"),
         ],
     },
