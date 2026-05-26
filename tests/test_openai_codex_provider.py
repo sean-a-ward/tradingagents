@@ -200,7 +200,7 @@ def test_openai_codex_client_uses_chatgpt_backend(monkeypatch):
     def fake_chat(**kwargs):
         return kwargs
 
-    monkeypatch.setattr(mod, "NormalizedChatOpenAI", fake_chat)
+    monkeypatch.setattr(mod, "OpenAICodexChatOpenAI", fake_chat)
 
     llm = mod.OpenAIClient(
         "gpt-5.5",
